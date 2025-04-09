@@ -25,16 +25,35 @@ export default function InventoryApp({ session }) {
   const [currentUser] = useState(username);
   const [excelData, setExcelData] = useState([]);
   const [fileId, setFileId] = useState(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [editMessage, setEditMessage] = useState("");
-  const [reportHistory, setReportHistory] = useState([]);
+  const [reportList, setReportList] = useState([]);
   const inputRefs = useRef([]);
 
   useEffect(() => {
-    if (userRole === "user") {
-      loadLatestFile();
-    }
+    loadReportList();
   }, []);
+
+  const loadReportList = async () => {
+    const { data, error } = await supabase
+      .from("files")
+      .select("id, created_at")
+      .order("created_at", { ascending: false });
+    if (!error) {
+      setReportList(data);
+    }
+  };
+
+  const loadFileById = async (id) => {
+    const { data, error } = await supabase
+      .from("files")
+      .select("id, data")
+      .eq("id", id)
+      .single();
+
+    if (!error && data?.data) {
+      setExcelData(data.data);
+      setFileId(data.id);
+    }
+  };
 
   const handleLogout = () => {
     window.location.reload();
@@ -62,28 +81,13 @@ export default function InventoryApp({ session }) {
         },
       ]).select();
 
-      if (error) {
-        console.error("Upload failed", error);
-      } else {
+      if (!error) {
         setExcelData(jsonData);
         setFileId(inserted[0].id);
+        loadReportList();
       }
     };
     reader.readAsBinaryString(file);
-  };
-
-  const loadLatestFile = async () => {
-    const { data, error } = await supabase
-      .from("files")
-      .select("id, data")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    if (!error && data?.data) {
-      setExcelData(data.data);
-      setFileId(data.id);
-    }
   };
 
   const saveToSupabase = async (newData) => {
@@ -97,8 +101,6 @@ export default function InventoryApp({ session }) {
     updatedData[index][4] = currentUser;
     setExcelData(updatedData);
     saveToSupabase(updatedData);
-    setEditMessage("Changes saved. Report will reflect latest values.");
-    setTimeout(() => setEditMessage(""), 3000);
   };
 
   const getInputClass = (actual, expected) => {
@@ -110,24 +112,37 @@ export default function InventoryApp({ session }) {
     return "border-red-500";
   };
 
-  const handleSubmit = () => {
-    saveToSupabase(excelData);
-    alert("Submitted. Data has been saved.");
+  const handleGenerateMismatchReport = () => {
+    const doc = new jsPDF();
+    const mismatched = excelData.slice(1).filter(
+      (row) => row[2] !== undefined && row[2] !== "" && row[2] !== row[1]
+    );
+    const rows = mismatched.map((row) => [row[0], row[1], row[2]]);
+    doc.text("Mismatched Count Report", 14, 16);
+    doc.autoTable({ head: [["SKU", "On Hand", "Count"]], body: rows, startY: 20 });
+    doc.save(`Mismatch_Report_${Date.now()}.pdf`);
   };
 
-  const handleGeneratePDF = () => {
+  const handleDownloadMissingCounts = () => {
     const doc = new jsPDF();
     const missing = excelData.slice(1).filter((row) => row[2] === undefined || row[2] === "");
-    const rows = missing.map((row) => [row[0], row[3]]);
+    const rows = missing.map((row) => [row[0], row[2]]);
     doc.text("Items Missing Physical Count", 14, 16);
-    doc.autoTable({ head: [["SKU", "Description"]], body: rows, startY: 20 });
+    doc.autoTable({ head: [["SKU", "Count"]], body: rows, startY: 20 });
     doc.save(`Missing_Counts_${Date.now()}.pdf`);
   };
 
-  const filteredData = excelData.filter((row, index) => {
-    if (index === 0) return true;
-    return row[0]?.toString().toLowerCase().includes(searchQuery.toLowerCase());
-  });
+  const focusNextEditableInput = (startIndex) => {
+    for (let i = startIndex + 1; i < excelData.length - 1; i++) {
+      if (excelData[i + 1][3]) {
+        const next = inputRefs.current[i];
+        if (next) {
+          next.focus();
+          break;
+        }
+      }
+    }
+  };
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
@@ -146,28 +161,38 @@ export default function InventoryApp({ session }) {
         </div>
       </div>
 
-      {userRole === "admin" && (
-        <div>
+      <div className="space-y-2">
+        {userRole === "admin" && (
           <Input type="file" accept=".xlsx,.xls" onChange={handleUpload} />
+        )}
+
+        <div>
+          <label className="mr-2 font-medium">Select Report:</label>
+          <select
+            onChange={(e) => loadFileById(e.target.value)}
+            className="border rounded px-2 py-1"
+          >
+            <option value="">-- Choose a report --</option>
+            {reportList.map((file) => (
+              <option key={file.id} value={file.id}>
+                {new Date(file.created_at).toLocaleString()}
+              </option>
+            ))}
+          </select>
         </div>
-      )}
+      </div>
 
       {excelData.length > 0 && (
         <div className="space-y-4">
-          {userRole === "user" && (
-            <div className="flex justify-between items-center">
-              <Input
-                type="text"
-                placeholder="Search SKU..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-64 border-gray-400"
-              />
-              <Button onClick={handleGeneratePDF}>Download Missing Counts PDF</Button>
-            </div>
-          )}
-
-          {editMessage && <div className="text-green-600 text-sm">{editMessage}</div>}
+          <div className="text-sm text-gray-600">
+            <strong>Legend:</strong>
+            <ul className="list-disc ml-6">
+              <li><span className="text-green-600 font-medium">Green</span>: Count matches On Hand</li>
+              <li><span className="text-yellow-500 font-medium">Yellow</span>: 1–10 off</li>
+              <li><span className="text-orange-500 font-medium">Orange</span>: 11–20 off</li>
+              <li><span className="text-red-500 font-medium">Red</span>: 21+ off</li>
+            </ul>
+          </div>
 
           <div className="overflow-auto border rounded p-2">
             <table className="w-full table-auto text-sm">
@@ -176,83 +201,51 @@ export default function InventoryApp({ session }) {
                   <th className="px-2 py-1">SKU</th>
                   {userRole === "admin" && <th className="px-2 py-1">On Hand</th>}
                   <th className="px-2 py-1">Physical Count</th>
-                  <th className="px-2 py-1">Description</th>
                   {userRole === "admin" && <th className="px-2 py-1">Entered By</th>}
                 </tr>
               </thead>
               <tbody>
-                {filteredData.slice(1).map((row, idx) => {
-                  const rowIndex = excelData.findIndex((r) => r[0] === row[0]);
-                  const physicalCount = row[2];
-                  const onHand = row[1];
-                  return (
-                    <tr key={idx} className="border-t">
-                      <td className="px-2 py-1">
-                        <span
-                          className={
-                            row[2] === undefined || row[2] === "" ? "font-bold" : ""
-                          }
-                        >
-                          {row[0]}
-                        </span>
-                      </td>
-                      {userRole === "admin" && <td className="px-2 py-1">{onHand}</td>}
-                      <td className="px-2 py-1">
-                        {row[3] ? (
-                          <Input
-                            ref={(el) => (inputRefs.current[rowIndex] = el)}
-                            type="text"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            value={physicalCount ?? ""}
-                            onChange={(e) => handleInputChange(rowIndex, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                const next = inputRefs.current[rowIndex + 1];
-                                if (next) next.focus();
-                              }
-                            }}
-                            className={`border-2 w-full ${getInputClass(
-                              parseInt(physicalCount),
-                              parseInt(onHand)
-                            )}`}
-                          />
-                        ) : (
-                          <span className="text-gray-400 italic">N/A</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1">{row[3]}</td>
-                      {userRole === "admin" && <td className="px-2 py-1">{row[4]}</td>}
-                    </tr>
-                  );
-                })}
+                {excelData.slice(1).map((row, index) => (
+                  <tr key={index} className="border-t">
+                    <td className="px-2 py-1 font-bold">{row[0]}</td>
+                    {userRole === "admin" && <td className="px-2 py-1">{row[1]}</td>}
+                    <td className="px-2 py-1">
+                      {row[3] ? (
+                        <Input
+                          ref={(el) => (inputRefs.current[index] = el)}
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={row[2] ?? ""}
+                          onChange={(e) => handleInputChange(index + 1, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              focusNextEditableInput(index);
+                            }
+                          }}
+                          className={`border-2 w-full ${getInputClass(
+                            parseInt(row[2]),
+                            parseInt(row[1])
+                          )}`}
+                        />
+                      ) : (
+                        <span className="text-gray-400 italic">N/A</span>
+                      )}
+                    </td>
+                    {userRole === "admin" && <td className="px-2 py-1">{row[4]}</td>}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </div>
-      )}
 
-      {userRole === "user" && excelData.length > 0 && (
-        <Button onClick={handleSubmit}>Submit</Button>
-      )}
-
-      {userRole === "admin" && excelData.length > 0 && (
-        <div className="mt-6 border-t pt-4 space-y-3">
           <div className="flex gap-4">
-            <Button onClick={handleSubmit}>Generate Report</Button>
-            <Button onClick={handleGeneratePDF}>Download Missing Counts PDF</Button>
+            {userRole === "admin" && (
+              <Button onClick={handleGenerateMismatchReport}>Generate Report</Button>
+            )}
+            <Button onClick={handleDownloadMissingCounts}>Download Missing Counts PDF</Button>
           </div>
-          {reportHistory.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold mt-2">Report History</h2>
-              <ul className="list-disc list-inside text-blue-700 mt-1">
-                {reportHistory.map((file, index) => (
-                  <li key={index}>{file}</li>
-                ))}
-              </ul>
-            </div>
-          )}
         </div>
       )}
     </div>
