@@ -113,14 +113,22 @@ export default function InventoryApp({ session }) {
   };
 
   const handleGenerateMismatchReport = () => {
-    const doc = new jsPDF();
     const mismatched = excelData.slice(1).filter(
       (row) => row[2] !== undefined && row[2] !== "" && row[2] !== row[1]
     );
-    const rows = mismatched.map((row) => [row[0], row[1], row[2]]);
-    doc.text("Mismatched Count Report", 14, 16);
-    doc.autoTable({ head: [["SKU", "On Hand", "Count"]], body: rows, startY: 20 });
-    doc.save(`Mismatch_Report_${Date.now()}.pdf`);
+    const csvRows = ["SKU,On Hand,Count,Difference"];
+    mismatched.forEach((row) => {
+      const difference = row[2] - row[1];
+      csvRows.push(`${row[0]},${row[1]},${row[2]},${difference}`);
+    });
+    const csvContent = csvRows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Mismatch_Report_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadMissingCounts = () => {
